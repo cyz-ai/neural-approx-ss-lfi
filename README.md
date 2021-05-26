@@ -2,10 +2,7 @@
 
 -------------------------------------------------------------------------
 
-Official codes for paper "Neural Approximate Sufficient Statistics for Implict Models", ICLR 21 spotlight
-ICLR forum: https://openreview.net/forum?id=SRDuJssQud
-Arxiv: https://arxiv.org/abs/2010.10079
-To learn sufficient statistics we need not to estimate density or even density ratio!
+Official codes for paper "Neural Approximate Sufficient Statistics for Implict Models", ICLR 21 spotlight, 2010.10079
 
 -------------------------------------------------------------------------
 
