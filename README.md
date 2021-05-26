@@ -2,24 +2,33 @@
 
 -------------------------------------------------------------------------
 
-Coming soon (really)!
+Official codes for paper "Neural Approximate Sufficient Statistics for Implict Models", ICLR 21 spotlight
 
 
-## Dependencies
+## Package Dependencies
 * Python 3
 * Pytorch
+* Numpy
+* Matplotlib
 
 
-## Summary statistic
+## Summary statistics 
 at /nn
-* Mean-as-statistics
-* Infomax statistics (proposed)
+* Mean as statistics 
+* Infomax statistics
 
 
 ## Likelihood-free algorithms
 at /algorithms
 * Sequential Monte Carlo ABC (SMC-ABC)
-* Sequential Neural Posterior Estimate (SNPE)
+* Sequential Monte Carlo ABC with s.s (SMC-ABC+)
 * Sequential Neural Likelihood (SNL)
-* Sequential Neural Ratio (SNR)
+* Sequential Neural Likelihood with s.s(SNL+)
+
+## Inference problems
+at /problems
+* Ising Model
+* Gaussian copula Model
+* Ornstein-Uhlenbeck process
+
 
