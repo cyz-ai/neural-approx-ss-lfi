@@ -10,7 +10,6 @@ Official codes for paper "Neural Approximate Sufficient Statistics for Implict M
 ## Package Dependencies
 * Python 3
 * Pytorch
-* Numpy
 * Matplotlib
 
 
