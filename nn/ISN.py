@@ -119,8 +119,8 @@ class ISN(nn.Module):
             B = torch.cdist(y, y, p=2)
             A_row_sum, A_col_sum = A.sum(dim=0, keepdim=True), A.sum(dim=1, keepdim=True)
             B_row_sum, B_col_sum = B.sum(dim=0, keepdim=True), B.sum(dim=1, keepdim=True)
-            a = A - A_row_sum/(m-2) - A_col_sum/(m-2) + A/((m-1)*(m-2))
-            b = B - B_row_sum/(m-2) - B_col_sum/(m-2) + B/((m-1)*(m-2))
+            a = A - A_row_sum/(m-2) - A_col_sum/(m-2) + A.sum()/((m-1)*(m-2))
+            b = B - B_row_sum/(m-2) - B_col_sum/(m-2) + B.sum()/((m-1)*(m-2))
             AB, AA, BB = (a*b).sum()/(m*(m-3)), (a*a).sum()/(m*(m-3)), (b*b).sum()/(m*(m-3))
             mi = AB**0.5/(AA**0.5 * BB**0.5)**0.5
         return mi
