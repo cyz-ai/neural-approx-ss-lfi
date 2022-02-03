@@ -18,6 +18,12 @@ at /nn
 * Mean as statistics (MSN.py)
 * Infomax statistics (ISN.py)
 
+## Neural density estimators
+at /nde
+* Mixture Density Network (MDN.py)
+* Maksed Autoregressive Flow (MAF.py)
+
+
 
 ## Likelihood-free algorithms
 at /algorithms
