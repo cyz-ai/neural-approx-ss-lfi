@@ -18,9 +18,9 @@ class ISN(nn.Module):
         # default hyperparameters
         self.estimator = 'JSD' if not hasattr(hyperparams, 'estimator') else hyperparams.estimator  
         self.bs = 200 if not hasattr(hyperparams, 'bs') else hyperparams.bs 
-        self.lr = 1e-4 if not hasattr(hyperparams, 'lr') else hyperparams.lr
+        self.lr = 5e-4 if not hasattr(hyperparams, 'lr') else hyperparams.lr
         self.wd = 0e-5 if not hasattr(hyperparams, 'wd') else hyperparams.wd
-        self.n_neg = 300 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
+        self.n_neg = 50 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
 
         self.encode_layer = EncodeLayer(architecture, hyperparams)
         self.encode2_layer = EncodeLayer([dim_y] + architecture[1:-1] + [dim_y], None)
