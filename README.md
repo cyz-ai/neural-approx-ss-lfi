@@ -12,6 +12,10 @@ Official codes for paper "Neural Approximate Sufficient Statistics for Implict M
 * Pytorch
 * Matplotlib
 
+## Recommend hyperparameters
+* n_neg = 25 (number of negative samples in infomax learning)
+* bs = 200 (batch size)
+* lr = 5e-4 (learning rate)
 
 ## Summary statistics 
 at /nn
