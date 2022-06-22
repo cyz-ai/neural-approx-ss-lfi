@@ -17,6 +17,7 @@ Official codes for paper "Neural Approximate Sufficient Statistics for Implict M
 at /nn
 * Mean as statistics (MSN.py)
 * Infomax statistics (ISN.py)
+* Score-matching statistics (SSN.py)
 
 ## Neural density estimators
 at /nde
