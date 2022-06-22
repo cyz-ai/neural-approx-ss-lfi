@@ -24,7 +24,6 @@ class ISN(nn.Module):
         self.wd = 0e-5 if not hasattr(hyperparams, 'wd') else hyperparams.wd
         self.n_neg = 20 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
         self.encode_y = True if not hasattr(hyperparams, 'encode_y') else hyperparams.encode_y
-
         self.encode_layer = EncodeLayer(architecture, dim_y, hyperparams)
         self.encode2_layer = EncodeLayer([dim_y] + architecture[1:], dim_y, None)
         self.critic_layer = CriticLayer(architecture, architecture[-1], hyperparams)
