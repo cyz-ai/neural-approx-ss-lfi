@@ -10,7 +10,8 @@ import utils_math, utils_os
 import distributions
 import discrepancy
 import algorithms.ABC_algorithms as ABC_algorithms
-from nn import MSN,ISN
+from nn import ISN, MSN, SSN
+from nde import MAF, MDN
 from copy import deepcopy
 
 
@@ -208,7 +209,7 @@ class SMC2_ABC(ABC_algorithms.Base_ABC):
             discrepancies[i] = self.discrepancy(y_obs, y)
         return discrepancies
     
-    def run(self):
+    def run(self, all_stats=None, all_samples=None):
         '''
            > main pipeline for the algorithm
         '''
@@ -225,9 +226,13 @@ class SMC2_ABC(ABC_algorithms.Base_ABC):
         for l in range(L):
             print('iteration ', l)
             self.l = l
-            self.simulate()
-            self.all_stats.append(self.stats)
-            self.all_samples.append(self.samples)
+            if all_stats is None:
+                self.simulate()
+                self.all_stats.append(self.stats)
+                self.all_samples.append(self.samples)
+            else:
+                self.all_stats = all_stats
+                self.all_samples = all_samples
             self.fit_vae()
             self.sort_samples()
             self.learn_fake_posterior()

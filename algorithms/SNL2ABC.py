@@ -10,7 +10,8 @@ import utils_math, utils_os
 import distributions
 import discrepancy
 import algorithms.ABC_algorithms as ABC_algorithms
-from nn import ISN, MSN, MAF, MDN
+from nn import ISN, MSN, SSN
+from nde import MAF, MDN
 from copy import deepcopy
 
 
@@ -44,22 +45,23 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
         self.epsilon = hyperparams.epsilon
         self.device = torch.device(hyperparams.device)
         self.nde_net = None                             # the learned q(x|theta)
-        self.vae_net = None                             # the learned s(x)
+        self.stat_net = None                            # the learned s(x)
         self.nde_array = []                             
-        self.vae_array = []     
+        self.stat_array = []     
         self.proposal_array = []                        # the proposal used at each round
         self.hidden_ratio = hyperparams.hidden_ratio    # dimensionality of s.s 
-        self.msn_hyperparams = hyperparams
-        self.msn_hyperparams.y_obs = self.convert_stat(self.whiten(self.y_obs))
+        self.hyperparams = hyperparams
+        self.stat_type = 'MI' if not hasattr(hyperparams, 'stat_type') else hyperparams.stat_type
+        print('hidden_ratio=', self.hidden_ratio, hyperparams.hidden_ratio)
         
     def convert_stat(self, x): 
         # no autoencoder, directly return s
-        if self.vae_net is None: 
+        if self.stat_net is None: 
             s = x
             return s
         # convert raw data to summary stat: s = S(x)
         else:
-            s = self.vae_net.encode(torch.tensor(x).float())
+            s = self.stat_net.encode(torch.tensor(x).float())
             return s.detach().cpu().numpy()
             
     def fit_nde(self):
@@ -78,21 +80,27 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
         self.nde_net = net
         self.nde_array.append(net)
 
-    def fit_vae(self):
+    def learn_stat(self):
         print('\n > fitting encoder')
         all_stats = torch.tensor(np.vstack(self.all_stats[0:self.l+1])).float().to(self.device)
         all_samples = torch.tensor(np.vstack(self.all_samples[0:self.l+1])).float().to(self.device)
         [n, dim] = all_stats.size()
-        h = int(dim*self.hidden_ratio)
+        print('all_stats.size()', all_stats.size())
+        h = int(dim*self.hidden_ratio) if self.hidden_ratio<1.0 else self.hidden_ratio
         print('summary statistic dim =', h, 'original dim =', dim)
         architecture = [dim] + [100, 100, h]    
         print('architecture', architecture)
-        net = ISN.ISN(architecture, dim_y=self.problem.K, hyperparams=self.msn_hyperparams)
+        if self.stat_type == 'infomax':
+            net = ISN.ISN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
+        if self.stat_type == 'moment':
+            net = MSN.MSN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
+        if self.stat_type == 'score':
+            net = SSN.SSN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
         net.train().to(self.device)
         net.learn(x=all_stats, y=all_samples)
         net = net.eval().cpu()
-        self.vae_net = net
-        self.vae_array.append(net)
+        self.stat_net = net
+        self.stat_array.append(net)
 
     def sample_from_nde(self):
         net = self.nde_net
@@ -100,7 +108,7 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
         # pilot run for rej sampling
         if self.max_ll is None:
             self.max_ll = -math.inf
-            for j in range(20000):
+            for j in range(10000):
                 theta = self.problem.sample_from_prior()
                 ll = self.log_likelihood(theta)
                 if ll > self.max_ll: self.max_ll = ll
@@ -127,50 +135,19 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
             '''
             log p(theta|x_o) = log r(x_o, theta) + C(x_o)   (note: uniform prior. Here r(x, theta) = p(x, theta)/p(x)p(theta))
             '''
-            net = self.vae_net
+            net = self.stat_net
             net.eval()
             y_obs, theta = self.y_obs, theta
             y_obs, theta = torch.tensor(y_obs).float(), torch.tensor(theta).float().view(1, -1)
-            stat = net.encode(y_obs)
-            theta = net.encode2(theta)
-            f = net.score_layer(stat, theta)
-            r = f.exp()
-            return r.log().item()
-
-    def learn_proposal(self):
-        '''
-            p_r(theta) = argmin_{q: q \in Gaussian} KL(q_{r-1}(theta|x_o), q)
-        '''
-        # minimize KL
-        print('\n > fitting proposal')
-        samples = np.vstack([self.sample_from_nde() for i in range(200)])
-        [n, dim] = samples.shape
-        mu = samples.mean(axis=0, keepdims=True)
-        M = np.mat(samples - mu)
-        cov = np.matmul(M.T, M)/n
-        print('mu=', mu)
-        print('cov=', cov)
-        
-        # proposal = inflated Gaussian approx to q
-        alpha = 1.25
-        mu, cov = torch.tensor(mu).float(), alpha*torch.tensor(cov).float()
-        gaussian = torch.distributions.MultivariateNormal(mu, cov)
-        self.proposal = gaussian
-        self.proposal_array.append(gaussian)
-        
-    def sample_from_proposal(self):
-        '''
-           > theta ~ p_r(theta)
-        '''
-        theta = self.proposal.sample().view(-1)
-        return theta.detach().cpu().numpy()
+            log_probs = net.log_likelihood(y_obs, theta)
+            return log_probs.view(-1).item()
         
     def set(self, l=0):
         self.l = l
-        self.vae_net = self.vae_array[l]
+        self.stat_net = self.stat_array[l]
         self.nde_net = self.nde_array[l]
 
-    def run(self):
+    def run(self, all_stats=None, all_samples=None):
         '''
             main pipeline for the algorithm
         '''
@@ -187,13 +164,16 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
             print('iteration ', l)
             self.l = l
             self.max_ll = None
-            self.simulate()
-            self.all_stats.append(self.stats)
-            self.all_samples.append(self.samples)
-            self.fit_vae()
+            if all_stats is None:
+                self.simulate()
+                self.all_stats.append(self.stats)
+                self.all_samples.append(self.samples)
+            else:
+                self.all_stats = all_stats
+                self.all_samples = all_samples
+            self.learn_stat()
             self.fit_nde()
-            self.learn_proposal()
-            self.prior = self.sample_from_proposal
+            self.prior = self.sample_from_nde
             print('\n')
         self.num_sim = total_num_sim
         

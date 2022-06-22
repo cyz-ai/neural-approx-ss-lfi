@@ -10,7 +10,7 @@ import utils_math, utils_os
 import distributions
 import discrepancy
 import algorithms.ABC_algorithms as ABC_algorithms
-from nn import MAF,MDN
+from nde import MAF,MDN
 from copy import deepcopy
 
 

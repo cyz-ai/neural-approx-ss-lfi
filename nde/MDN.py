@@ -5,6 +5,7 @@ import torch.distributions as distribution
 import math
 import numpy as np
 import time
+import optimizer
 from copy import deepcopy
 
 
@@ -14,6 +15,9 @@ class MDN(nn.Module):
     """
     def __init__(self, n_in, n_hidden, n_out, K=1):
         super(MDN, self).__init__()
+        self.bs = 400
+        self.lr = 5e-4
+        self.wd = 1e-5
         self.main = nn.Sequential(
             nn.Linear(n_in, n_hidden),
             nn.ReLU(),
@@ -71,53 +75,14 @@ class MDN(nn.Module):
             prob += coeff[:,k] * log_prob.exp() 
         return (prob + 1e-12).log()
     
-    def learn(self, inputs, cond_inputs, weights=None):
-        # optimizer 
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-4, weight_decay=1e-5)
-        T = 5000
-
-        # divide train & val
-        x, y, w = inputs, cond_inputs, torch.zeros(len(inputs)).to(inputs.device)+1.0 if weights is None else weights.view(-1)
-        n = len(x)
-        n_train = int(0.80*n)
-        bs = 1000 if n_train>1000 else n_train
-        idx = torch.randperm(n)
-        x_train, x_val =  x[idx[0:n_train]], x[idx[n_train:n]]
-        y_train, y_val =  y[idx[0:n_train]], y[idx[n_train:n]]
-        w_train, w_val =  w[idx[0:n_train]], w[idx[n_train:n]]
-        
-        # go
-        N = int(len(x_train)/bs)
-        best_val_loss, best_model_state_dict, no_improvement = math.inf, None, 0
-        for t in range(T):
-            # shuffle 
-            idx = torch.randperm(len(x_train))
-            x_train, y_train, w_train = x_train[idx], y_train[idx], w_train[idx]
-            x_chunks, y_chunks, w_chunks = torch.chunk(x_train, N), torch.chunk(y_train, N), torch.chunk(w_train, N)
-            
-            # loss
-            for i in range(len(x_chunks)):
-                optimizer.zero_grad()
-                loss = -(self.log_probs(inputs=x_chunks[i], cond_inputs=y_chunks[i])*w_chunks[i]).mean()
-                loss.backward()
-                optimizer.step()
-                
-            # early stopping if val loss does not improve after 100 epochs
-            loss_val = -(self.log_probs(inputs=x_val, cond_inputs=y_val)*w_val).mean()
-            no_improvement += 1
-            if loss_val.item() < best_val_loss:
-                no_improvement = 0 
-                best_val_loss = loss_val.item()  
-                best_model_state_dict = deepcopy(self.state_dict())
-            if no_improvement >= 100: break
-                
-            # report
-            if t%int(T/20) == 0: print('finished: t=', t, 'loss=', loss.item(), 'loss val=', loss_val.item())
-        
-        # return the best model
-        self.load_state_dict(best_model_state_dict)
-        print('best val loss=', best_val_loss)
-        return loss.item()
+    def objective_func(self, inputs, cond_inputs):
+        return self.log_probs(inputs, cond_inputs)
+    
+    def learn(self, inputs, cond_inputs):
+        loss_value = optimizer.NNOptimizer.learn(self, inputs, cond_inputs)
+        return loss_value
+    
+    
         
 class CoeffLayer(nn.Module):
     def __init__(self, n_in, K):

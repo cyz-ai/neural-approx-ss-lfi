@@ -5,6 +5,7 @@ import torch.distributions as distribution
 import math
 import numpy as np
 import time
+import optimizer
 from copy import deepcopy
 
 
@@ -14,12 +15,16 @@ class MAF(nn.Sequential):
     """
     def __init__(self, n_blocks, n_inputs, n_hidden, n_cond_inputs):
         module = []
+        self.bs = 200
+        self.lr = 5e-4
+        self.wd = 0e-5
         self.n_blocks = n_blocks
         self.n_inputs = n_inputs
         self.n_hidden = n_hidden
         self.n_cond_inputs = n_cond_inputs
         for _ in range(n_blocks): module += [MADE(n_inputs, n_hidden, n_cond_inputs), Reverse(n_inputs)]
         super().__init__(*module)
+        
     
     def forward(self, inputs, cond_inputs=None, mode='direct'):
         self.num_inputs = inputs.size(-1)
@@ -48,55 +53,34 @@ class MAF(nn.Sequential):
         u, log_jacob = self.forward(inputs, cond_inputs)
         log_base_prob = (-0.5 * u.pow(2) - 0.5 * math.log(2 * math.pi)).sum(dim=1, keepdim=True)
         return (log_base_prob + log_jacob).sum(dim=1)
+    
+    def objective_func(self, x, y):
+        return self.log_probs(inputs=x, cond_inputs=y).mean()
+    
+    def learn(self, inputs, cond_inputs):
+        loss_value = optimizer.NNOptimizer.learn(self, inputs, cond_inputs)
+        return loss_value
 
-    def learn(self, inputs, cond_inputs, weights=None):
-        # optimizer 
+    def svi(self, log_P):
         optimizer = torch.optim.Adam(self.parameters(), lr=5e-4, weight_decay=1e-5)
-        T = 10000
-
-        # divide train & val
-        x, y, w = inputs, cond_inputs, torch.zeros(len(inputs)).to(inputs.device)+1.0 if weights is None else weights.view(-1)
-        n = len(x)
-        n_train = int(0.80*n)
-        bs = 1000 if n_train>1000 else n_train
-        idx = torch.randperm(n)
-        x_train, x_val =  x[idx[0:n_train]], x[idx[n_train:n]]
-        y_train, y_val =  y[idx[0:n_train]], y[idx[n_train:n]]
-        w_train, w_val =  w[idx[0:n_train]], w[idx[n_train:n]]
-        
-        # go
-        N = int(len(x_train)/bs)
-        best_val_loss, best_model_state_dict, no_improvement = math.inf, None, 0
+        T = 1000
         for t in range(T):
-            # shuffle 
-            idx = torch.randperm(len(x_train))
-            x_train, y_train, w_train = x_train[idx], y_train[idx], w_train[idx]
-            x_chunks, y_chunks, w_chunks = torch.chunk(x_train, N), torch.chunk(y_train, N), torch.chunk(w_train, N)
-            
-            # loss
-            for i in range(len(x_chunks)):
-                optimizer.zero_grad()
-                loss = -(self.log_probs(inputs=x_chunks[i], cond_inputs=y_chunks[i])*w_chunks[i]).mean()
-                loss.backward()
-                optimizer.step()
-                
-            # early stopping if val loss does not improve after some epochs
-            loss_val = -(self.log_probs(inputs=x_val, cond_inputs=y_val)*w_val).mean()
-            no_improvement += 1
-            if loss_val.item() < best_val_loss:
-                no_improvement = 0 
-                best_val_loss = loss_val.item()  
-                best_model_state_dict = deepcopy(self.state_dict())
-                
-            if no_improvement >= 50: break
-                
-            # report
-            if t%int(T/20) == 0: print('finished: t=', t, 'loss=', loss.item(), 'loss val=', loss_val.item())
-        
-        # return the best model
-        self.load_state_dict(best_model_state_dict)
-        print('best val loss=', best_val_loss)
+            optimizer.zero_grad()
+            n = 100
+            z = torch.Tensor(n, self.n_inputs).normal_()
+            x, log_jacob = self.forward(z, None, mode='inverse')
+            log_base_prob = (-0.5 * z.pow(2) - 0.5 * math.log(2 * math.pi)).sum(dim=1, keepdim=True)
+            log_q = (log_base_prob + log_jacob).sum(dim=1).view(n, 1)
+            log_p = torch.zeros(n, 1)
+            for i in range(n): log_p[i] = log_P(x[i])
+            loss = (log_q - log_p).mean()
+            loss.backward()
+            optimizer.step()
+            if t%int(T/20) == 0: print('finished: t=', t, 'loss=', loss.item())
         return loss.item()
+    
+        
+        
     
 
 class MADE(nn.Module):

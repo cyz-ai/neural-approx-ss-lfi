@@ -137,52 +137,6 @@ def MMD(samples_P, samples_Q):
 
 
 
-# Sample-based Jensen-Shannon divergence
-def JSD_sample(samples_P, samples_Q, N_grid=30):
-
-    # > estimated by KDE, might be inaccurate in dim>4 cases
-
-    (n, dim) = samples_P.shape
-    (m, dim) = samples_Q.shape
-
-    # Estimate density by KDE
-    kernel_p = stats.gaussian_kde(samples_P.T)
-    kernel_q = stats.gaussian_kde(samples_Q.T)
-
-    samples = np.vstack((samples_P, samples_Q))
-    min_values = samples.min(axis=0)
-    max_values = samples.max(axis=0)
-
-    N = N_grid
-    ranges = []
-    for k in range(dim):
-        ranges.append(np.array(np.linspace(min_values[k], max_values[k], N)))
-    R = np.array(np.meshgrid(*ranges)).T.reshape(-1, dim)
-    R = R.T
-
-    prob_p = kernel_p(R)+0e-10
-    prob_q = kernel_q(R)+0e-10
-
-    # Riemann integration for KL computation
-    KL_PM = 0
-    KL_QM = 0
-
-    prob_p = prob_p/sum(prob_p)
-    prob_q = prob_q/sum(prob_q)
-    prob_pq = (prob_p + prob_q)/2
-    for i in range(N**dim):
-        if prob_p[i] < 1e-20:
-            KL_PM += 0
-        else:
-            KL_PM += prob_p[i] * np.log(prob_p[i]/prob_pq[i])
-
-        if prob_q[i] < 1e-20:
-            KL_QM += 0
-        else:
-            KL_QM += prob_q[i] * np.log(prob_q[i]/prob_pq[i])
-
-    return KL_PM/2 + KL_QM/2
-    
 
 
 # Jensen-Shannon divergence
@@ -228,6 +182,32 @@ def JSD(log_p, log_q, samples_P, samples_Q, N_grid=30):
             KL_QM += prob_q[i] * np.log(prob_q[i]/prob_pq[i])
 
     return KL_PM/2 + KL_QM/2
+
+
+
+# Jensen-Shannon divergence
+def JSD2(log_P, log_Q, log_P2, samples_P2):
+
+    # > Monte Carlo approximation of the JSD value using importance sampling
+    
+    [n, dim] = samples_P2.shape
+    KL_PM = 0
+    KL_QM = 0
+    for i in range(n):
+        x = samples_P2[i]
+        log_p = log_P(x)
+        log_q = log_Q(x)
+        log_pq = np.log((np.exp(log_p) + np.exp(log_q))/2.0)
+        log_p2 = log_P2(x)
+        f = log_p - log_pq
+        g = log_q - log_pq
+        w_f = np.exp(log_p - log_p2)
+        w_g = np.exp(log_q - log_p2)
+        KL_PM += (w_f*f)/n
+        KL_QM += (w_g*g)/n
+    return KL_PM/2 + KL_QM/2
+
+
 
 
 

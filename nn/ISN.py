@@ -3,8 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F 
 import torch.autograd as autograd
 import numpy as np
+import scipy
 import math
 import time
+import optimizer
 from copy import deepcopy
 
 
@@ -18,13 +20,17 @@ class ISN(nn.Module):
         # default hyperparameters
         self.estimator = 'JSD' if not hasattr(hyperparams, 'estimator') else hyperparams.estimator  
         self.bs = 200 if not hasattr(hyperparams, 'bs') else hyperparams.bs 
-        self.lr = 1e-4 if not hasattr(hyperparams, 'lr') else hyperparams.lr
+        self.lr = 5e-4 if not hasattr(hyperparams, 'lr') else hyperparams.lr
         self.wd = 0e-5 if not hasattr(hyperparams, 'wd') else hyperparams.wd
-        self.n_neg = 300 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
+        self.n_neg = 20 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
+        self.encode_y = True if not hasattr(hyperparams, 'encode_y') else hyperparams.encode_y
 
-        self.encode_layer = EncodeLayer(architecture, hyperparams)
-        self.encode2_layer = EncodeLayer([dim_y] + architecture[1:-1] + [dim_y], None)
-        self.critic_layer = CriticLayer(dim_x=architecture[-1], dim_y=dim_y, dim_hidden=200, n_layer=0, hyperparams=hyperparams)
+        self.encode_layer = EncodeLayer(architecture, dim_y, hyperparams)
+        self.encode2_layer = EncodeLayer([dim_y] + architecture[1:], dim_y, None)
+        self.critic_layer = CriticLayer(architecture, architecture[-1], hyperparams)
+        
+        self.encodeb_layer = EncodeLayer(architecture[0:-1] + [1], 1, hyperparams)
+        self.encode2b_layer = EncodeLayer([dim_y] + architecture[1:-1] + [1], 1, None)
     
     def encode(self, x):
         # s = s(x), get the summary statistic of x
@@ -47,7 +53,7 @@ class ISN(nn.Module):
             f_pos = self.critic_layer(z, y)
             f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
             mi = f_pos.mean() - f_neg.exp().mean().log()
-        # [B]. NWJ estimator (f-GAN, NIPS'17)
+        # [B]. NWJ estimator (f-div, NIPS'17)
         if self.estimator == 'NWJ':
             m, d = z.size()
             z, y = self.encode(z), self.encode2(y)
@@ -62,7 +68,7 @@ class ISN(nn.Module):
         # [C]. Jensen-shannon divergence (DeepInfoMax, ICLR'19)
         if self.estimator == 'JSD':
             m, d = z.size()
-            z, y = self.encode(z), self.encode2(y)
+            z, y = self.encode(z), self.encode2(y) if self.encode_y else y
             idx_pos = []
             idx_neg = []
             for i in range(n): 
@@ -72,166 +78,131 @@ class ISN(nn.Module):
             f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
             A, B = -F.softplus(-f_pos), F.softplus(f_neg)
             mi = A.mean() - B.mean()
-       # [D]. InfoNCE (InfoNCE, NIPS'18) 
-        if self.estimator == 'InfoNCE':
+        # [C]. Jensen-shannon divergence (DeepInfoMax, ICLR'19)
+        if self.estimator == 'JSD2':
             m, d = z.size()
-            z, y = self.encode(z), self.encode2(y)
+            z, zz, y, yy = self.encode(z), self.encodeb_layer(z), self.encode2(y), self.encode2b_layer(y)
             idx_pos = []
             idx_neg = []
-            for i in range(m):
-                idx_pos = idx_pos + (np.zeros(m-1)+i).tolist()
-                idx = torch.tensor(np.linspace(0, m-1, m))
-                idx_neg = idx_neg + idx[idx.ne(i).nonzero().view(-1)].numpy().tolist()
-            f_pos = self.critic_layer(z, y).exp() + 1e-10
-            f_neg = self.critic_layer(z[idx_pos], y[idx_neg]).exp().view(m, m-1).sum(dim=1) + 1e-10
-            A, B = f_pos.log(), f_neg.log()
+            for i in range(n): 
+                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
+                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
+            def fake_critic(z, zz, y, yy): return (z*y).sum(dim=1) + yy.view(-1) + zz.view(-1)  
+            f_pos = fake_critic(z[idx_pos], zz[idx_pos], y[idx_pos], yy[idx_pos])
+            f_neg = fake_critic(z[idx_pos], zz[idx_pos], y[idx_neg], yy[idx_neg])
+            A, B = -F.softplus(-f_pos), F.softplus(f_neg)
             mi = A.mean() - B.mean()
         # [E]. Wasserstein dependency measure (WPC, NIPS'19)
         if self.estimator == 'WD':
-            z, y = self.encode(z), y
-            m, d, K = z.size()[0], z.size()[1], y.size()[1]
-            z_shuffle = torch.zeros(n*m, d).to(z.device)
-            y_shuffle = torch.zeros(n*m, K).to(z.device)   
+            z, y = self.encode(z), self.encode2(y)
+            m, d, K = z.size()[0], z.size()[1], y.size()[1] 
             idx_pos = []
             idx_neg = []
-            idx_neg2 = []
             for i in range(n):
                 idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
                 idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
-                idx_neg2 = idx_neg2 + torch.randperm(m).cpu().numpy().tolist()
-            alpha = torch.rand(m*n, 1).to(z.device)
-            z_mix = alpha*z[idx_pos] + (1-alpha)*z[idx_neg]
-            y_mix = alpha*y[idx_neg] + (1-alpha)*y[idx_neg2]
-            zy_mix = autograd.Variable(torch.cat((z_mix, y_mix), dim=1), requires_grad=True)
-            f_pos = self.critic_layer(z[idx_pos], self.encode2(y[idx_pos]))
-            f_neg = self.critic_layer(z[idx_neg], self.encode2(y[idx_neg2])) 
-            f_mix = self.critic_layer(zy_mix[:,0:d], self.encode2(zy_mix[:,d:]))
-            gradients = autograd.grad(outputs=f_mix, inputs=zy_mix,
-                                      grad_outputs=torch.ones(f_mix.size(), device=z.device),
-                                      create_graph=True, retain_graph=True, only_inputs=True)[0]
-            gp = F.relu(gradients.norm(2, dim=1)-1)
-            mi = f_pos.mean() - f_neg.mean() - self.training*1e2*gp.mean()
+            f_pos = self.critic_layer(z, y)
+            f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
+            mi = f_pos.mean() - f_neg.mean()
         # [F]. Distance correlation (Annals of Statistics'07)
         if self.estimator == 'DC':
             m, d = z.size()
-            z, y = self.encode(z), y
+            z, y = self.encode(z), self.encode2(y) if self.encode_y else y
             A = torch.cdist(z, z, p=2)
             B = torch.cdist(y, y, p=2)
             A_row_sum, A_col_sum = A.sum(dim=0, keepdim=True), A.sum(dim=1, keepdim=True)
             B_row_sum, B_col_sum = B.sum(dim=0, keepdim=True), B.sum(dim=1, keepdim=True)
-            a = A - A_row_sum/(m-2) - A_col_sum/(m-2) + A/((m-1)*(m-2))
-            b = B - B_row_sum/(m-2) - B_col_sum/(m-2) + B/((m-1)*(m-2))
+            a = A - A_row_sum/(m-2) - A_col_sum/(m-2) + A.sum()/((m-1)*(m-2))
+            b = B - B_row_sum/(m-2) - B_col_sum/(m-2) + B.sum()/((m-1)*(m-2))
             AB, AA, BB = (a*b).sum()/(m*(m-3)), (a*a).sum()/(m*(m-3)), (b*b).sum()/(m*(m-3))
             mi = AB**0.5/(AA**0.5 * BB**0.5)**0.5
+        # [G]. Renyi correlation
+        if self.estimator == 'Renyi':
+            m, d = z.size()
+            z, y = self.bridge_layer(self.encode(z)), self.encode2(y) if self.encode_y else y
+            z_mu, z_std = z.mean(dim=0, keepdim=True), z.std(dim=0, keepdim=True)
+            z = (z-z_mu)/(z_std + 1e-10)
+            y_mu, y_std = y.mean(dim=0, keepdim=True), y.std(dim=0, keepdim=True)
+            y = (y-y_mu)/(y_std + 1e-10)
+            yy = (y*z).mean(dim=0)
+            corr = yy.abs()
+            mi = corr.mean()
+        # [H]. Reverse KL 
+        if self.estimator == 'R-KL':
+            m, d = z.size()
+            z, y = self.encode(z), self.encode2(y)
+            idx_pos = []
+            idx_neg = []        
+            for i in range(n):
+                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
+                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
+            f_pos = z*y
+            f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
+            mi = f_pos.mean() - (f_pos-1).exp().mean()
         return mi
     
-    def LOSS(self, x, y, n=10):
-        return -self.MI(x, y, n)
+    def objective_func(self, x, y):
+        return self.MI(x, y, n=self.n_neg)
     
-    def learn(self, x, y):    
-        # hyperparams 
-        T = 3000
-        T_NO_IMPROVE_THRESHOLD = 200
-        
-        # divide train & val 
-        n = len(x)
-        n_train = int(0.80*n)
-        bs = self.bs if n_train>self.bs else n_train
-        idx = torch.randperm(n) 
-        x_train, y_train = x[idx[0:n_train]], y[idx[0:n_train]]
-        x_val, y_val = x[idx[n_train:n]], y[idx[n_train:n]]
-        print('validation size=', n_train/n)
-        
-        # learn in loops
-        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=self.lr, weight_decay=self.wd)
-        n_batch, n_val_batch = int(len(x_train)/bs), int(len(x_val)/bs)+1
-        best_val_loss, best_model_state_dict, no_improvement = math.inf, None, 0
-        
-        for t in range(T):
-            # shuffle the batch
-            idx = torch.randperm(len(x_train)) 
-            x_train, y_train = x_train[idx], y_train[idx]
-            x_chunks, y_chunks = torch.chunk(x_train, n_batch), torch.chunk(y_train, n_batch)
-            x_v_chunks, y_v_chunks = torch.chunk(x_val, n_val_batch), torch.chunk(y_val, n_val_batch)
+    def learn(self, x, y):
+        loss_value = optimizer.NNOptimizer.learn(self, x, y)
+        return loss_value
+    
 
-            # gradient descend
-            self.train()
-            start = time.time()
-            for i in range(len(x_chunks)):
-                optimizer.zero_grad()
-                loss = -self.MI(x_chunks[i], y_chunks[i], n=self.n_neg)
-                loss.backward()
-                optimizer.step()
-            end = time.time()
-
-            # early stopping if val loss does not improve after some epochs
-            self.eval()
-            loss_val = torch.zeros(1, device=x.device)
-            for j in range(len(x_v_chunks)):
-                loss_val += -self.MI(x_v_chunks[j], y_v_chunks[j], n=self.n_neg)/len(x_v_chunks)
-            improved = loss_val.item() < best_val_loss
-            no_improvement = 0 if improved else no_improvement + 1
-            best_val_loss = loss_val.item() if improved else best_val_loss     
-            best_model_state_dict = deepcopy(self.state_dict()) if improved else best_model_state_dict
-            if no_improvement >= T_NO_IMPROVE_THRESHOLD: break
-
-            # report
-            if t%50 == 0: print('finished: t=', t, 'loss=', loss.item(), 'loss val=', loss_val.item(), 'time=', (end-start)/len(x_chunks))
-
-        # return the best snapshot in the history
-        self.load_state_dict(best_model_state_dict)
-        print('best val loss=', best_val_loss)
-        return best_val_loss
 
     
-    
-    
-        
+            
 class CriticLayer(nn.Module): 
-    def __init__(self, dim_x, dim_y, dim_hidden, n_layer=1, hyperparams=None):
-        super().__init__()        
-        self.fc = nn.Linear(dim_x + dim_y, dim_hidden)
-        self.drop = nn.Dropout(p=0.20)
-        self.main = nn.Sequential(
-            *(nn.Linear(dim_hidden, dim_hidden, bias=True) for i in range(n_layer)),
-        )
-        self.out = nn.Linear(dim_hidden, 1)
-        self.dropout = False if not hasattr(hyperparams, 'dropout') else hyperparams.dropout 
-        self.clip = 999999 if not hasattr(hyperparams, 'clip') else hyperparams.clip 
-        
-    def forward(self, x, y):
-        xy = torch.cat((x,y), dim=1)
-        h = self.fc(xy)
-        h = F.relu(h)
-        h = self.drop(h) if self.dropout else h
-        for layer in self.main:
-            h = F.relu(layer(h))
+    def __init__(self, architecture, dim_y, hyperparams=None):
+        super().__init__()       
+        dim_x, dim_y, dim_hidden = architecture[-1], dim_y, 200
+        # WD case; need to do spectral normalization
+        if hyperparams.estimator is 'WD':
+            self.main = nn.Sequential(
+                nn.utils.spectral_norm(nn.Linear(dim_x + dim_y, dim_hidden), n_power_iterations=5),
+            )
+            self.out = nn.utils.spectral_norm(nn.Linear(dim_hidden, 1), n_power_iterations=5)
+            self.alpha = nn.Parameter(torch.Tensor(1))
+        # Other cases; need to do noting
+        else:
+            self.main = nn.Sequential(
+                nn.Linear(dim_x + dim_y, dim_hidden),
+            )
+            self.out = nn.Linear(dim_hidden, 1)
+
+    def forward(self, x, y, others=None):
+        h = torch.cat((x,y), dim=1)
+        if others is None:
+            h = self.main(h)
+        else:
+            h = self.main(h) + self.cond(others)
+        h = torch.tanh(h)
         out = self.out(h)
-        out = torch.clamp(out, -self.clip, self.clip)
-        return out
-    
-    
+        return out 
     
     
         
 class EncodeLayer(nn.Module):
-    def __init__(self, architecture, hyperparams=None):
+    def __init__(self, architecture, dim_y, hyperparams=None):
         super().__init__()
-        self.type = 'plain' if not hasattr(hyperparams, 'type') else hyperparams.type 
-        self.dropout = False if not hasattr(hyperparams, 'dropout') else hyperparams.dropout 
+        self.type = 'plain' if not hasattr(hyperparams, 'type') or hyperparams is None else hyperparams.type 
+        self.dropout = False if not hasattr(hyperparams, 'dropout') or hyperparams is None else hyperparams.dropout 
         self.main = nn.Sequential( 
            *(nn.Linear(architecture[i+1], architecture[i+2], bias=True) for i in range(len(architecture)-3)),
-        )      
+        )  
         if self.type == 'plain':
             self.plain = nn.Linear(architecture[0], architecture[1], bias=True)
-        if self.type == 'lstm':
-            self.front = nn.LSTM(1, architecture[1], num_layers=1)
-        if self.type == 'cnn':
-            self.cnn = nn.Sequential(
-                 nn.Conv1d(in_channels=1, out_channels=50, kernel_size=5, stride=1),
+        if self.type == 'iid':
+            self.enn = nn.Sequential(
+                 nn.Conv1d(in_channels=1, out_channels=50, kernel_size=1, stride=1),
                  nn.ReLU(),
-                 nn.Flatten(),
-                 nn.Linear((architecture[0]-4*1)*50, architecture[1])   # d = D - (K-1)L
+                 nn.Conv1d(in_channels=50, out_channels=architecture[1], kernel_size=1, stride=1),
+            )
+        if self.type == 'cnn1d':
+            self.cnn = nn.Sequential(
+                 nn.Conv1d(in_channels=1, out_channels=50, kernel_size=3, stride=1),
+                 nn.ReLU(),
+                 nn.Conv1d(in_channels=50, out_channels=architecture[1], kernel_size=3, stride=1),
             )
         if self.type == 'cnn2d':
             self.cnn2d = nn.Sequential(
@@ -241,28 +212,31 @@ class EncodeLayer(nn.Module):
                  nn.Linear(50*(int(architecture[0]**0.5)-1)**2, architecture[1])# d = D - (K-1)L
             )
         self.drop = nn.Dropout(p=0.20)
-        self.out = nn.Linear(architecture[-2], architecture[-1], bias=True)
+        self.out = nn.Sequential(
+            nn.Linear(architecture[-2], architecture[-1], bias=True),
+        )
         self.N_layers = len(architecture) - 1
         self.architecture = architecture
             
     def front_end(self, x):
-        if self.type == 'lstm':
+        # i.i.d data
+        if self.type == 'iid':
             n, d = x.size()
-            x = x.view(n, d, 1).permute(1, 0, 2)
-            lstm_hidden_size = self.architecture[0]
-            lstm_num_layers = 1
-            hidden_cell = (torch.zeros(lstm_num_layers,n,lstm_hidden_size).to(x.device), 
-                           torch.zeros(lstm_num_layers,n,lstm_hidden_size).to(x.device))
-            out, _ = self.lstm(x, hidden_cell)
-            x = out[-1]
-        if self.type == 'cnn':
+            x = x.view(n, 1, d)  # n*1*d
+            x = self.enn(x)      # n*k*d
+            x = x.sum(dim=2)     # n*k
+        # Time-series data
+        if self.type == 'cnn1d':
             n, d = x.size()
-            x = x.view(n, 1, d)
-            x = self.cnn(x)
+            x = x.view(n, 1, d)  # n*1*d
+            x = self.cnn(x)      # n*k*d'
+            x = x.sum(dim=2)     # n*k
+        # Image data
         if self.type == 'cnn2d':
             n, d = x.size()
             x = x.view(n, 1, int(d**0.5), int(d**0.5))
-            x = self.cnn2d(x)
+            x = self.cnn2d(x)    # n*k
+        # default
         if self.type == 'plain':
             x = self.plain(x) 
         return x
@@ -273,3 +247,52 @@ class EncodeLayer(nn.Module):
         x = self.drop(x) if self.dropout else x
         x = self.out(x)
         return x
+    
+    
+
+class TransformLayer(nn.Module):
+        
+    def __init__(self, architecture, dim_y, hyperparams):
+        super().__init__()     
+        self.repeat = int(architecture[-1]/dim_y)
+        self.A_ = nn.Parameter(torch.Tensor(1))
+        self.B_ = nn.Parameter(torch.Tensor(1))
+        self.g_ = nn.Parameter(torch.Tensor(1))
+        self.k_ = nn.Parameter(torch.Tensor(1))
+        self.A_.data.fill_(0)
+        self.B_.data.fill_(0)  
+        self.g_.data.fill_(0)
+        self.k_.data = (torch.zeros(self.k_.size())-0.69315).data
+     
+    def reparam(self):
+        A,B,g,k = self.A_,F.softplus(self.B_),self.g_,F.softplus(self.k_)-0.5
+        return A,B,g,k
+    
+    def forward(self, y):
+        n,d = y.size()
+        t = y.clone().detach().cpu()
+        Y = []
+        for j in range(self.repeat):
+            y2 = torch.zeros(n, d)
+            for i in range(d):
+                sample = np.atleast_1d(t[:,i])
+                rank = scipy.stats.rankdata(sample).astype(float)
+                cdf = (rank+1)/(n+2)
+                z = scipy.stats.norm.ppf(cdf)
+                A,B,g,k = self.reparam()
+                y2[:,i] = self.Q(torch.Tensor(z), A,B,g,k)
+            Y.append(y2)
+        return torch.cat(Y, dim=1).to(y.device)
+    
+    def Q(self, z,A,B,g,k):
+        # preparation
+        c = 0.80
+        g,k = torch.tensor(g).float(), torch.tensor(k).float()
+        A,B = torch.tensor(A).float(), torch.tensor(B).float()
+        # forward
+        w = (1-torch.exp(-g*z))/(1+torch.exp(-g*z))
+        v = z*(1+z*z).pow(k)
+        x = A + B*(1 + c*w)*v
+        return x
+    
+

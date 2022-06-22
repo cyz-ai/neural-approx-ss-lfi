@@ -3,10 +3,8 @@ import scipy.stats as stats
 
 
 def ecdf(sample):
-    # preparation
-    sample = np.atleast_1d(sample)
-
     # compute cdf = rank(x)/n
+    sample = np.atleast_1d(sample)
     quantiles, counts = np.unique(sample, return_counts=True)
     cdf = np.cumsum(counts).astype(np.double) / sample.size
     return quantiles, cdf
@@ -65,7 +63,7 @@ def kde_2D(samples):
     ymin = data[1, 0:].min()
     ymax = data[1, 0:].max()
 
-    X, Y = np.mgrid[xmin:xmax:400j, ymin:ymax:400j]
+    X, Y = np.mgrid[xmin:xmax:300j, ymin:ymax:300j]
     positions = np.vstack([X.ravel(), Y.ravel()])
     Z = np.reshape(kde_kernel(positions).T, X.shape)
     return (X,Y,Z)
@@ -89,10 +87,10 @@ def log_likelihood_2D(samples, log_likelihood_function):
     ymin = data[1, 0:].min()
     ymax = data[1, 0:].max()
 
-    X, Y = np.mgrid[xmin:xmax:35j, ymin:ymax:35j]
+    X, Y = np.mgrid[xmin:xmax:50j, ymin:ymax:50j]
     Z = np.zeros(X.shape)
-    for i in range(35):
-        for j in range(35):
+    for i in range(50):
+        for j in range(50):
             x = X[i,j]
             y = Y[i,j]
             theta = [x,y]
@@ -110,14 +108,14 @@ def log_likelihood_3D(samples, log_likelihood_function, dimensions):
     zmin = data[2, 0:].min()
     zmax = data[2, 0:].max()
 
-    # MC approximation
-    X, Y, Z = np.mgrid[xmin:xmax:20j, ymin:ymax:20j, zmin:zmax:20j]
+    # MC approximation    
+    X, Y, Z = np.mgrid[xmin:xmax:30j, ymin:ymax:30j, zmin:zmax:30j]
     if dimensions == (0,1):
-        XX, YY = np.mgrid[xmin:xmax:20j, ymin:ymax:20j]
+        XX, YY = np.mgrid[xmin:xmax:30j, ymin:ymax:30j]
         F = np.zeros(XX.shape)
-        for i in range(20):
-            for j in range(20):
-                for k in range(20):
+        for i in range(30):
+            for j in range(30):
+                for k in range(30):
                     x = X[i,j,k]
                     y = Y[i,j,k]
                     z = Z[i,j,k]
@@ -128,11 +126,11 @@ def log_likelihood_3D(samples, log_likelihood_function, dimensions):
         return (XX,YY,F)
 
     if dimensions == (0,2):
-        XX, ZZ = np.mgrid[xmin:xmax:20j, zmin:zmax:20j]
+        XX, ZZ = np.mgrid[xmin:xmax:30j, zmin:zmax:30j]
         F = np.zeros(XX.shape)
-        for i in range(20):
-            for j in range(20):
-                for k in range(20):
+        for i in range(30):
+            for j in range(30):
+                for k in range(30):
                     x = X[i,j,k]
                     y = Y[i,j,k]
                     z = Z[i,j,k]
@@ -143,11 +141,11 @@ def log_likelihood_3D(samples, log_likelihood_function, dimensions):
         return (XX,ZZ,F)
 
     if dimensions == (1,2):
-        YY, ZZ = np.mgrid[ymin:ymax:20j, zmin:zmax:20j]
+        YY, ZZ = np.mgrid[ymin:ymax:30j, zmin:zmax:30j]
         F = np.zeros(YY.shape)
-        for i in range(20):
-            for j in range(20):
-                for k in range(20):
+        for i in range(30):
+            for j in range(30):
+                for k in range(30):
                     x = X[i,j,k]
                     y = Y[i,j,k]
                     z = Z[i,j,k]

@@ -400,7 +400,7 @@ class MoG(object):
             
             # get parameters of MoG
             mu = mu_                                  # K*1
-            sigma = F.softplus(sigma_) + min_sigma/3  # K*1
+            sigma = F.softplus(sigma_) + min_sigma/8  # K*1
             coeff = coeff_.exp()/coeff_.exp().sum()   # K*1
             
             # optimize!
