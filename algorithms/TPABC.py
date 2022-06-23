@@ -17,7 +17,7 @@ import algorithms.SMCABC as SMCABC
 class TP_ABC(SMCABC.SMC_ABC):
 
     '''
-    True posterior approximation via <rejection sampling + sufficient stat>
+    True posterior approximation via <rejection ABC + known sufficient stat>, used in Ising model
     '''
     
     def __init__(self, problem, discrepancy, hyperparams, **kwargs):
@@ -53,7 +53,7 @@ class TP_ABC(SMCABC.SMC_ABC):
     def get_true_samples(self):
         return self.rej_samples
     
-    def run(self):
+    def run(self, rej_samples=None):
         '''
            > main pipeline for the algorithm
         '''
@@ -69,11 +69,14 @@ class TP_ABC(SMCABC.SMC_ABC):
         self.all_samples = []
         self.all_discrepancies = []
         self.num_sim = int(total_num_sim*ratios[self.l]) 
-        self.simulate()
-        self.all_stats.append(self.stats)
-        self.all_samples.append(self.samples)
-        self.all_discrepancies.append(self.discrepancies)
-        self.sort_samples()
+        if rej_samples is None:
+            self.simulate()
+            self.all_stats.append(self.stats)
+            self.all_samples.append(self.samples)
+            self.all_discrepancies.append(self.discrepancies)
+            self.sort_samples()
+        else:
+            self.rej_samples = rej_samples
         self.learn_fake_posterior()
         self.learn_true_posterior()
         print('\n')

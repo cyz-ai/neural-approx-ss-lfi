@@ -35,41 +35,45 @@ class SMC2_ABC(ABC_algorithms.Base_ABC):
         self.needed_hyperparams = ['epsilon']
         self.epsilon = hyperparams.epsilon
         self.device = torch.device(hyperparams.device)
-        self.vae_net = None 
-        self.vae_array = []
+        self.stat_net = None 
+        self.stat_array = []
         self.posterior_array = []
-        self.hidden_ratio = hyperparams.hidden_ratio    # dimensionality of s.s 
-        
-        # compute pi(theta)
+
+        # compute p(theta)
         self.volume = 1.0
         ranges = self.problem.prior_args
         for k in range(self.problem.K): self.volume = self.volume*(ranges[k,1] - ranges[k,0])
             
     def convert_stat(self, x): 
         # no autoencoder, directly return s
-        if self.vae_net is None: 
+        if self.stat_net is None: 
             s = x
             return s
         # convert raw data to summary stat: s = S(x)
         else:
-            s = self.vae_net.encode(torch.tensor(x).float())
+            s = self.stat_net.encode(torch.tensor(x).float())
             return s.detach().cpu().numpy()
                 
-    def fit_vae(self):
+    def learn_stat(self):
         print('\n > fitting encoder')
         all_stats = torch.tensor(np.vstack(self.all_stats)).float().to(self.device)
         all_samples = torch.tensor(np.vstack(self.all_samples)).float().to(self.device)
         [n, dim] = all_stats.size()
-        h = int(dim*self.hidden_ratio)
+        h = self.problem.K*2
         print('summary statistic dim =', h, 'original dim =', dim)
         architecture = [dim] + [100, 100, h]    
         print('architecture', architecture)
-        net = ISN.ISN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
+        if self.hyperparams.stat == 'infomax':
+            net = ISN.ISN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
+        if self.hyperparams.stat == 'moment':
+            net = MSN.MSN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
+        if self.hyperparams.stat == 'score':
+            net = SSN.SSN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
         net.train().to(self.device)
         net.learn(x=all_stats, y=all_samples)
         net = net.eval().cpu()
-        self.vae_net = net
-        self.vae_array.append(net)
+        self.stat_net = net
+        self.stat_array.append(net)
           
     def sort_samples(self):
         
@@ -154,7 +158,13 @@ class SMC2_ABC(ABC_algorithms.Base_ABC):
         # [B]. fit p_{r+1}(theta) with the sampled thetas
         self.posterior = self._fit(thetas)
         self.posterior_array.append(self.posterior)
-        
+                        
+    def log_likelihood(self, theta):
+        '''
+           > log_q_r(theta|x^o)
+        '''
+        return np.log(self._pdf(theta, self.posterior))
+    
     def pdf_fake_prior(self, theta):
         '''
            > p(theta) = 1/n * ∑ q_r(theta|x^o)
@@ -164,26 +174,6 @@ class SMC2_ABC(ABC_algorithms.Base_ABC):
         L = len(posterior_array) + 1.0
         for posterior in posterior_array: pdf += self._pdf(theta, posterior)
         return pdf/L
-                
-    def log_likelihood(self, theta):
-        '''
-           > log_q_r(theta|x^o)
-        '''
-        return np.log(self._pdf(theta, self.posterior))
-    
-    def log_mixture_likelihood(self, theta):
-        '''
-            log p(theta|x_o) = 1/K \sum log q_{r-k}(x_o|theta)   k = 0,1,..K
-        '''
-        K = 3
-        max_idx, min_idx = self.l, max(self.l-K+1, 0)
-        posterior_array = self.posterior_array[min_idx:max_idx+1] 
-        prob = 1e-12
-        L = len(posterior_array)
-        for l in range(L):
-            probs = self._pdf(theta, posterior_array[l])
-            prob += probs/L
-        return np.log(prob)
     
     def log_fake_posterior(self, theta):
         '''
@@ -233,7 +223,7 @@ class SMC2_ABC(ABC_algorithms.Base_ABC):
             else:
                 self.all_stats = all_stats
                 self.all_samples = all_samples
-            self.fit_vae()
+            self.learn_stat()
             self.sort_samples()
             self.learn_fake_posterior()
             self.learn_true_posterior()

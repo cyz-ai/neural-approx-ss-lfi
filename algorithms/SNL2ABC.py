@@ -49,11 +49,8 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
         self.nde_array = []                             
         self.stat_array = []     
         self.proposal_array = []                        # the proposal used at each round
-        self.hidden_ratio = hyperparams.hidden_ratio    # dimensionality of s.s 
         self.hyperparams = hyperparams
-        self.stat_type = 'MI' if not hasattr(hyperparams, 'stat_type') else hyperparams.stat_type
-        print('hidden_ratio=', self.hidden_ratio, hyperparams.hidden_ratio)
-        
+ 
     def convert_stat(self, x): 
         # no autoencoder, directly return s
         if self.stat_net is None: 
@@ -70,7 +67,7 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
         all_samples = torch.tensor(np.vstack(self.all_samples[0:self.l+1])).float().to(self.device)
         [n, dim] = all_stats.size()
         print('all_stats.size()', all_stats.size())
-        if not hasattr(self.hyperparams, 'nde') or self.hyperparams.nde == 'MAF':
+        if self.hyperparams.nde == 'MAF':
             net = MAF.MAF(n_blocks=5, n_inputs=dim, n_hidden=50, n_cond_inputs=self.problem.K)
         if self.hyperparams.nde == 'MDN':
             net = MDN.MDN(n_in=self.problem.K, n_hidden=50, n_out=dim, K=8)
@@ -85,16 +82,15 @@ class SNL2_ABC(ABC_algorithms.Base_ABC):
         all_stats = torch.tensor(np.vstack(self.all_stats[0:self.l+1])).float().to(self.device)
         all_samples = torch.tensor(np.vstack(self.all_samples[0:self.l+1])).float().to(self.device)
         [n, dim] = all_stats.size()
-        print('all_stats.size()', all_stats.size())
-        h = int(dim*self.hidden_ratio) if self.hidden_ratio<1.0 else self.hidden_ratio
+        h = self.problem.K*2
         print('summary statistic dim =', h, 'original dim =', dim)
         architecture = [dim] + [100, 100, h]    
         print('architecture', architecture)
-        if self.stat_type == 'infomax':
+        if self.hyperparams.stat == 'infomax':
             net = ISN.ISN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
-        if self.stat_type == 'moment':
+        if self.hyperparams.stat == 'moment':
             net = MSN.MSN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
-        if self.stat_type == 'score':
+        if self.hyperparams.stat == 'score':
             net = SSN.SSN(architecture, dim_y=self.problem.K, hyperparams=self.hyperparams)
         net.train().to(self.device)
         net.learn(x=all_stats, y=all_samples)
