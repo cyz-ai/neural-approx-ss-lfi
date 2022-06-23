@@ -22,14 +22,12 @@ class ISN(nn.Module):
         self.bs = 200 if not hasattr(hyperparams, 'bs') else hyperparams.bs 
         self.lr = 5e-4 if not hasattr(hyperparams, 'lr') else hyperparams.lr
         self.wd = 0e-5 if not hasattr(hyperparams, 'wd') else hyperparams.wd
-        self.n_neg = 20 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
+        self.n_neg = 25 if not hasattr(hyperparams, 'n_neg') else hyperparams.n_neg
+        
         self.encode_y = True if not hasattr(hyperparams, 'encode_y') else hyperparams.encode_y
         self.encode_layer = EncodeLayer(architecture, dim_y, hyperparams)
-        self.encode2_layer = EncodeLayer([dim_y] + architecture[1:], dim_y, None)
-        self.critic_layer = CriticLayer(architecture, architecture[-1], hyperparams)
-        
-        self.encodeb_layer = EncodeLayer(architecture[0:-1] + [1], 1, hyperparams)
-        self.encode2b_layer = EncodeLayer([dim_y] + architecture[1:-1] + [1], 1, None)
+        self.encode2_layer = nn.BatchNorm1d(dim_y)
+        self.critic_layer = CriticLayer(architecture, dim_y, hyperparams)
     
     def encode(self, x):
         # s = s(x), get the summary statistic of x
@@ -40,31 +38,7 @@ class ISN(nn.Module):
         return self.encode2_layer(y)
         
     def MI(self, z, y, n=10):
-        # [A]. Donsker-Varadhan Representation (MINE, ICML'18)
-        if self.estimator == 'DV':
-            m, d = z.size()
-            z, y = self.encode(z), self.encode2(y)
-            idx_pos = []
-            idx_neg = []
-            for i in range(n):
-                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
-                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
-            f_pos = self.critic_layer(z, y)
-            f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
-            mi = f_pos.mean() - f_neg.exp().mean().log()
-        # [B]. NWJ estimator (f-div, NIPS'17)
-        if self.estimator == 'NWJ':
-            m, d = z.size()
-            z, y = self.encode(z), self.encode2(y)
-            idx_pos = []
-            idx_neg = []        
-            for i in range(n):
-                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
-                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
-            f_pos = self.critic_layer(z, y)
-            f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
-            mi = f_pos.mean() - (f_neg-1).exp().mean()
-        # [C]. Jensen-shannon divergence (DeepInfoMax, ICLR'19)
+        # [A]. Jensen-shannon divergence (DeepInfoMax, ICLR'19)
         if self.estimator == 'JSD':
             m, d = z.size()
             z, y = self.encode(z), self.encode2(y) if self.encode_y else y
@@ -77,33 +51,7 @@ class ISN(nn.Module):
             f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
             A, B = -F.softplus(-f_pos), F.softplus(f_neg)
             mi = A.mean() - B.mean()
-        # [C]. Jensen-shannon divergence (DeepInfoMax, ICLR'19)
-        if self.estimator == 'JSD2':
-            m, d = z.size()
-            z, zz, y, yy = self.encode(z), self.encodeb_layer(z), self.encode2(y), self.encode2b_layer(y)
-            idx_pos = []
-            idx_neg = []
-            for i in range(n): 
-                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
-                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
-            def fake_critic(z, zz, y, yy): return (z*y).sum(dim=1) + yy.view(-1) + zz.view(-1)  
-            f_pos = fake_critic(z[idx_pos], zz[idx_pos], y[idx_pos], yy[idx_pos])
-            f_neg = fake_critic(z[idx_pos], zz[idx_pos], y[idx_neg], yy[idx_neg])
-            A, B = -F.softplus(-f_pos), F.softplus(f_neg)
-            mi = A.mean() - B.mean()
-        # [E]. Wasserstein dependency measure (WPC, NIPS'19)
-        if self.estimator == 'WD':
-            z, y = self.encode(z), self.encode2(y)
-            m, d, K = z.size()[0], z.size()[1], y.size()[1] 
-            idx_pos = []
-            idx_neg = []
-            for i in range(n):
-                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
-                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
-            f_pos = self.critic_layer(z, y)
-            f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
-            mi = f_pos.mean() - f_neg.mean()
-        # [F]. Distance correlation (Annals of Statistics'07)
+        # [B]. Distance correlation (Annals of Statistics'07)
         if self.estimator == 'DC':
             m, d = z.size()
             z, y = self.encode(z), self.encode2(y) if self.encode_y else y
@@ -115,29 +63,30 @@ class ISN(nn.Module):
             b = B - B_row_sum/(m-2) - B_col_sum/(m-2) + B.sum()/((m-1)*(m-2))
             AB, AA, BB = (a*b).sum()/(m*(m-3)), (a*a).sum()/(m*(m-3)), (b*b).sum()/(m*(m-3))
             mi = AB**0.5/(AA**0.5 * BB**0.5)**0.5
-        # [G]. Renyi correlation
-        if self.estimator == 'Renyi':
-            m, d = z.size()
-            z, y = self.bridge_layer(self.encode(z)), self.encode2(y) if self.encode_y else y
-            z_mu, z_std = z.mean(dim=0, keepdim=True), z.std(dim=0, keepdim=True)
-            z = (z-z_mu)/(z_std + 1e-10)
-            y_mu, y_std = y.mean(dim=0, keepdim=True), y.std(dim=0, keepdim=True)
-            y = (y-y_mu)/(y_std + 1e-10)
-            yy = (y*z).mean(dim=0)
-            corr = yy.abs()
-            mi = corr.mean()
-        # [H]. Reverse KL 
-        if self.estimator == 'R-KL':
+        # [C]. Donsker-Varadhan Representation (MINE, ICML'18)
+        if self.estimator == 'DV':
             m, d = z.size()
             z, y = self.encode(z), self.encode2(y)
             idx_pos = []
-            idx_neg = []        
+            idx_neg = []
             for i in range(n):
                 idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
                 idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
-            f_pos = z*y
+            f_pos = self.critic_layer(z, y)
             f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
-            mi = f_pos.mean() - (f_pos-1).exp().mean()
+            mi = f_pos.mean() - f_neg.exp().mean().log()
+        # [D]. Wasserstein dependency measure (WPC, NIPS'19)
+        if self.estimator == 'WD':
+            z, y = self.encode(z), self.encode2(y)
+            m, d, K = z.size()[0], z.size()[1], y.size()[1] 
+            idx_pos = []
+            idx_neg = []
+            for i in range(n):
+                idx_pos = idx_pos + np.linspace(0, m-1, m).tolist()
+                idx_neg = idx_neg + torch.randperm(m).cpu().numpy().tolist()
+            f_pos = self.critic_layer(z, y)
+            f_neg = self.critic_layer(z[idx_pos], y[idx_neg])
+            mi = f_pos.mean() - f_neg.mean()
         return mi
     
     def objective_func(self, x, y):
@@ -161,7 +110,6 @@ class CriticLayer(nn.Module):
                 nn.utils.spectral_norm(nn.Linear(dim_x + dim_y, dim_hidden), n_power_iterations=5),
             )
             self.out = nn.utils.spectral_norm(nn.Linear(dim_hidden, 1), n_power_iterations=5)
-            self.alpha = nn.Parameter(torch.Tensor(1))
         # Other cases; need to do noting
         else:
             self.main = nn.Sequential(
@@ -245,53 +193,6 @@ class EncodeLayer(nn.Module):
         for layer in self.main: x = F.relu(layer(x))
         x = self.drop(x) if self.dropout else x
         x = self.out(x)
-        return x
-    
-    
-
-class TransformLayer(nn.Module):
-        
-    def __init__(self, architecture, dim_y, hyperparams):
-        super().__init__()     
-        self.repeat = int(architecture[-1]/dim_y)
-        self.A_ = nn.Parameter(torch.Tensor(1))
-        self.B_ = nn.Parameter(torch.Tensor(1))
-        self.g_ = nn.Parameter(torch.Tensor(1))
-        self.k_ = nn.Parameter(torch.Tensor(1))
-        self.A_.data.fill_(0)
-        self.B_.data.fill_(0)  
-        self.g_.data.fill_(0)
-        self.k_.data = (torch.zeros(self.k_.size())-0.69315).data
-     
-    def reparam(self):
-        A,B,g,k = self.A_,F.softplus(self.B_),self.g_,F.softplus(self.k_)-0.5
-        return A,B,g,k
-    
-    def forward(self, y):
-        n,d = y.size()
-        t = y.clone().detach().cpu()
-        Y = []
-        for j in range(self.repeat):
-            y2 = torch.zeros(n, d)
-            for i in range(d):
-                sample = np.atleast_1d(t[:,i])
-                rank = scipy.stats.rankdata(sample).astype(float)
-                cdf = (rank+1)/(n+2)
-                z = scipy.stats.norm.ppf(cdf)
-                A,B,g,k = self.reparam()
-                y2[:,i] = self.Q(torch.Tensor(z), A,B,g,k)
-            Y.append(y2)
-        return torch.cat(Y, dim=1).to(y.device)
-    
-    def Q(self, z,A,B,g,k):
-        # preparation
-        c = 0.80
-        g,k = torch.tensor(g).float(), torch.tensor(k).float()
-        A,B = torch.tensor(A).float(), torch.tensor(B).float()
-        # forward
-        w = (1-torch.exp(-g*z))/(1+torch.exp(-g*z))
-        v = z*(1+z*z).pow(k)
-        x = A + B*(1 + c*w)*v
         return x
     
 
