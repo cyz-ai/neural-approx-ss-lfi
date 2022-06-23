@@ -24,7 +24,7 @@ class Hyperparams(object):
         self.num_samples = 1000
         self.pilot_run_N = 100000
         self.whiten = False
-        self.save = True
+        self.save = False
         self.num_sim_division = None
 
 
