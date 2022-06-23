@@ -26,8 +26,8 @@ class ISN(nn.Module):
         
         self.encode_y = True if not hasattr(hyperparams, 'encode_y') else hyperparams.encode_y
         self.encode_layer = EncodeLayer(architecture, dim_y, hyperparams)
-        self.encode2_layer = nn.BatchNorm1d(dim_y)
-        self.critic_layer = CriticLayer(architecture, dim_y, hyperparams)
+        self.encode2_layer = EncodeLayer([dim_y] + architecture[1:], dim_y, None)
+        self.critic_layer = CriticLayer(architecture, architecture[-1], hyperparams)
     
     def encode(self, x):
         # s = s(x), get the summary statistic of x
@@ -116,13 +116,10 @@ class CriticLayer(nn.Module):
                 nn.Linear(dim_x + dim_y, dim_hidden),
             )
             self.out = nn.Linear(dim_hidden, 1)
-
-    def forward(self, x, y, others=None):
+   
+    def forward(self, x, y):
         h = torch.cat((x,y), dim=1)
-        if others is None:
-            h = self.main(h)
-        else:
-            h = self.main(h) + self.cond(others)
+        h = self.main(h) 
         h = torch.tanh(h)
         out = self.out(h)
         return out 
